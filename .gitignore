@@ -1,0 +1,25 @@
+# Database (your personal lap data — keep this local)
+*.db
+*.sqlite
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Environment variable files (never commit API keys)
+.env
+*.env
+
+# macOS junk
+.DS_Store
+
+# Editor folders
+.vscode/
+.idea/
