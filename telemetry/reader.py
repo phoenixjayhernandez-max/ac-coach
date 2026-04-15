@@ -227,16 +227,17 @@ class ACTelemetryReader:
             return False
 
     def disconnect(self):
-        FILE_MAP_READ = 0x0004
+        kernel32 = ctypes.windll.kernel32
+        kernel32.UnmapViewOfFile.argtypes = [ctypes.c_void_p]
         for ptr, handle in [
             (self._physics_ptr,  self._physics_handle),
             (self._graphics_ptr, self._graphics_handle),
             (self._static_ptr,   self._static_handle),
         ]:
             if ptr:
-                ctypes.windll.kernel32.UnmapViewOfFile(ptr)
+                kernel32.UnmapViewOfFile(ctypes.c_void_p(ptr))
             if handle:
-                ctypes.windll.kernel32.CloseHandle(handle)
+                kernel32.CloseHandle(handle)
         self.connected = False
 
     # ------------------------------------------------------------------
@@ -253,13 +254,19 @@ class ACTelemetryReader:
     @staticmethod
     def _open(name: str, struct_type):
         FILE_MAP_READ = 0x0004
-        handle = ctypes.windll.kernel32.OpenFileMappingW(FILE_MAP_READ, False, name)
+
+        # Tell ctypes the return types so 64-bit pointers aren't truncated
+        kernel32 = ctypes.windll.kernel32
+        kernel32.OpenFileMappingW.restype  = ctypes.c_void_p
+        kernel32.MapViewOfFile.restype     = ctypes.c_void_p
+
+        handle = kernel32.OpenFileMappingW(FILE_MAP_READ, False, name)
         if not handle:
             return None, None
         size = ctypes.sizeof(struct_type)
-        ptr = ctypes.windll.kernel32.MapViewOfFile(handle, FILE_MAP_READ, 0, 0, size)
+        ptr = kernel32.MapViewOfFile(handle, FILE_MAP_READ, 0, 0, size)
         if not ptr:
-            ctypes.windll.kernel32.CloseHandle(handle)
+            kernel32.CloseHandle(handle)
             return None, None
         return handle, ptr
 
@@ -269,7 +276,7 @@ class ACTelemetryReader:
             return None
         size = ctypes.sizeof(struct_type)
         buf = (ctypes.c_byte * size)()
-        ctypes.memmove(buf, ptr, size)
+        ctypes.memmove(buf, ctypes.c_void_p(ptr), size)
         return struct_type.from_buffer_copy(buf)
 
 

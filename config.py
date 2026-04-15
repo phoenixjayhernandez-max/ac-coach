@@ -1,5 +1,18 @@
 import os
 
+# Load .env file if present (keeps your API key out of GitHub)
+try:
+    _env = os.path.join(os.path.dirname(__file__), ".env")
+    if os.path.exists(_env):
+        with open(_env) as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if _line and not _line.startswith("#") and "=" in _line:
+                    _k, _v = _line.split("=", 1)
+                    os.environ.setdefault(_k.strip(), _v.strip())
+except Exception:
+    pass
+
 # --- PUT YOUR ANTHROPIC API KEY HERE ---
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "YOUR_API_KEY_HERE")
 
