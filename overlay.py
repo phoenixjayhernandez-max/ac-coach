@@ -134,7 +134,7 @@ class ReferenceLap:
 # Overlay
 # ---------------------------------------------------------------------------
 class ACOverlay:
-    W, H = 290, 430
+    W, H = 290, 590
     TW, TH = 56, 66   # tyre canvas size
 
     def __init__(self):
@@ -200,50 +200,44 @@ class ACOverlay:
 
         self._sep(pady=2)
 
-        # ── Speed ────────────────────────────────────────────────────────
+        # ── Speed + Gear (same row) ───────────────────────────────────────
         spd_row = tk.Frame(r, bg=BG)
-        spd_row.pack(fill="x", **pad, pady=(6, 0))
+        spd_row.pack(fill="x", **pad, pady=(4, 0))
+
+        self.v_gear = tk.StringVar(value="N")
+        tk.Label(spd_row, textvariable=self.v_gear,
+                 font=(*FONT_NUM, 28, "bold"), bg=BG, fg=ACCENT,
+                 anchor="w", width=2).pack(side="left")
 
         self.v_speed = tk.StringVar(value="0")
         tk.Label(spd_row, textvariable=self.v_speed,
-                 font=(*FONT_NUM, 44, "bold"), bg=BG, fg=FG,
-                 anchor="e").pack(side="left")
-
-        unit_col = tk.Frame(spd_row, bg=BG)
-        unit_col.pack(side="left", padx=(4, 0), pady=(20, 0))
+                 font=(*FONT_NUM, 28, "bold"), bg=BG, fg=FG,
+                 anchor="e").pack(side="left", padx=(6, 0))
 
         self.v_speed_unit = tk.StringVar(value="km/h")
-        spd_unit_lbl = tk.Label(unit_col, textvariable=self.v_speed_unit,
-                 font=(*FONT_UI, 9), bg=BG, fg=DIM,
-                 cursor="hand2", anchor="w")
-        spd_unit_lbl.pack(anchor="w")
+        spd_unit_lbl = tk.Label(spd_row, textvariable=self.v_speed_unit,
+                 font=(*FONT_UI, 8), bg=BG, fg=DIM,
+                 cursor="hand2", anchor="sw")
+        spd_unit_lbl.pack(side="left", padx=(4, 0), pady=(10, 0))
         spd_unit_lbl.bind("<Button-1>", self._toggle_speed)
 
-        # ── Gear + RPM bar ───────────────────────────────────────────────
-        grpm = tk.Frame(r, bg=BG)
-        grpm.pack(fill="x", **pad, pady=(2, 0))
-
-        self.v_gear = tk.StringVar(value="N")
-        tk.Label(grpm, textvariable=self.v_gear,
-                 font=(*FONT_NUM, 20, "bold"), bg=BG, fg=ACCENT,
-                 width=3, anchor="w").pack(side="left")
-
-        rhs = tk.Frame(grpm, bg=BG)
-        rhs.pack(side="left", fill="x", expand=True)
+        # ── RPM bar ──────────────────────────────────────────────────────
+        rpm_row = tk.Frame(r, bg=BG)
+        rpm_row.pack(fill="x", **pad, pady=(2, 0))
 
         self.v_rpm = tk.StringVar(value="")
-        tk.Label(rhs, textvariable=self.v_rpm,
+        tk.Label(rpm_row, textvariable=self.v_rpm,
                  font=(*FONT_UI, 7), bg=BG, fg=DIM,
                  anchor="e").pack(fill="x")
 
-        rpm_bg = tk.Frame(rhs, bg=BG2, height=8)
-        rpm_bg.pack(fill="x", pady=(1, 0))
+        rpm_bg = tk.Frame(r, bg=BG2, height=8)
+        rpm_bg.pack(fill="x", padx=12, pady=(1, 0))
         rpm_bg.pack_propagate(False)
         self._c_rpm = tk.Canvas(rpm_bg, bg=BG2, height=8,
                                 highlightthickness=0, bd=0)
         self._c_rpm.pack(fill="both", expand=True)
 
-        self._sep()
+        self._sep(pady=3)
 
         # ── Lap time + Delta ─────────────────────────────────────────────
         lt = tk.Frame(r, bg=BG)
@@ -251,17 +245,17 @@ class ACOverlay:
 
         self.v_lap = tk.StringVar(value="-:--.---")
         tk.Label(lt, textvariable=self.v_lap,
-                 font=(*FONT_NUM, 17, "bold"), bg=BG, fg=FG,
+                 font=(*FONT_NUM, 14, "bold"), bg=BG, fg=FG,
                  anchor="w").pack(side="left")
 
         self.v_delta = tk.StringVar(value="")
         self.lbl_delta = tk.Label(lt, textvariable=self.v_delta,
-                 font=(*FONT_NUM, 17, "bold"), bg=BG, fg=GREEN, anchor="e")
+                 font=(*FONT_NUM, 14, "bold"), bg=BG, fg=GREEN, anchor="e")
         self.lbl_delta.pack(side="right")
 
         # Delta bar
         dbar = tk.Frame(r, bg=BG2, height=4)
-        dbar.pack(fill="x", padx=12, pady=(3, 0))
+        dbar.pack(fill="x", padx=12, pady=(2, 0))
         dbar.pack_propagate(False)
         self._c_delta = tk.Canvas(dbar, bg=BG2, height=4,
                                   highlightthickness=0, bd=0)
@@ -269,7 +263,7 @@ class ACOverlay:
 
         # Best + Lap # + Pos
         meta = tk.Frame(r, bg=BG)
-        meta.pack(fill="x", **pad, pady=(4, 2))
+        meta.pack(fill="x", **pad, pady=(3, 1))
         self.v_best = tk.StringVar(value="Best  --:--.---")
         tk.Label(meta, textvariable=self.v_best,
                  font=(*FONT_UI, 8), bg=BG, fg=DIM, anchor="w").pack(side="left")
