@@ -134,7 +134,8 @@ class ReferenceLap:
 # Overlay
 # ---------------------------------------------------------------------------
 class ACOverlay:
-    W, H = 290, 390
+    W, H = 290, 430
+    TW, TH = 56, 66   # tyre canvas size
 
     def __init__(self):
         self.root = tk.Tk()
@@ -291,24 +292,15 @@ class ACOverlay:
         temp_unit_lbl.bind("<Button-1>", self._toggle_temp)
 
         tgrid = tk.Frame(r, bg=BG)
-        tgrid.pack(pady=(3, 0))
+        tgrid.pack(pady=(4, 0))
 
-        self._tv: Dict[str, tk.StringVar] = {}
-        self._tl: Dict[str, tk.Label]     = {}
-
+        self._tyre_c: Dict[str, tk.Canvas] = {}
         for pos, row, col in [("FL",0,0),("FR",0,1),("RL",1,0),("RR",1,1)]:
-            cell = tk.Frame(tgrid, bg=BG2, width=56, height=44)
-            cell.grid(row=row, column=col, padx=4, pady=3)
-            cell.grid_propagate(False)
-            tk.Label(cell, text=pos, font=(*FONT_UI, 7),
-                     bg=BG2, fg=DIM).place(relx=0.5, y=5, anchor="n")
-            v = tk.StringVar(value="--°")
-            lbl = tk.Label(cell, textvariable=v,
-                           font=(*FONT_NUM, 13, "bold"),
-                           bg=BG2, fg=FG)
-            lbl.place(relx=0.5, rely=0.65, anchor="center")
-            self._tv[pos] = v
-            self._tl[pos] = lbl
+            c = tk.Canvas(tgrid, bg=BG, width=self.TW, height=self.TH,
+                          highlightthickness=0, bd=0)
+            c.grid(row=row, column=col, padx=8, pady=4)
+            self._tyre_c[pos] = c
+            self._draw_tyre(c, pos, 0)
 
         self._sep()
 
@@ -336,6 +328,66 @@ class ACOverlay:
                  font=(*FONT_UI, 8), bg=BG, fg=DIM, anchor="e").pack(anchor="e")
         tk.Label(br, textvariable=self.v_abs,
                  font=(*FONT_UI, 8), bg=BG, fg=DIM, anchor="e").pack(anchor="e")
+
+    # ------------------------------------------------------------------ tyre drawing
+    def _draw_tyre(self, canvas: tk.Canvas, pos: str, temp_c: float):
+        import math
+        canvas.delete("all")
+        W, H = self.TW, self.TH
+        cx = W // 2
+
+        col = tyre_col(temp_c)
+
+        # Position label
+        canvas.create_text(cx, 4, text=pos, fill=DIM,
+                           font=(*FONT_UI, 7), anchor="n")
+
+        # Tyre dimensions
+        t0x, t0y = 4, 13
+        t1x, t1y = W - 4, H - 16
+
+        # Outer glow when very hot (>95°C)
+        if temp_c > 95:
+            canvas.create_oval(t0x - 3, t0y - 3, t1x + 3, t1y + 3,
+                               fill=col, outline="", stipple="gray25")
+
+        # Outer tyre (rubber, coloured by temp)
+        canvas.create_oval(t0x, t0y, t1x, t1y, fill=col, outline="")
+
+        # Sidewall highlight (lighter arc on top-left for depth)
+        canvas.create_arc(t0x + 3, t0y + 3, t1x - 3, t1y - 3,
+                          start=120, extent=60,
+                          outline="#ffffff", style="arc", width=1)
+
+        # Rim (dark inner circle)
+        inset = 11
+        canvas.create_oval(t0x + inset, t0y + inset,
+                           t1x - inset, t1y - inset,
+                           fill="#1a1a1a", outline="#2e2e2e", width=1)
+
+        # Wheel bolts (5 dots on the rim)
+        rcx = (t0x + t1x) // 2
+        rcy = (t0y + t1y) // 2
+        bolt_r = 7
+        for i in range(5):
+            angle = math.radians(i * 72 - 90)
+            bx = rcx + bolt_r * math.cos(angle)
+            by = rcy + bolt_r * math.sin(angle)
+            canvas.create_oval(bx - 2, by - 2, bx + 2, by + 2,
+                               fill="#303030", outline="")
+
+        # Hub centre dot
+        canvas.create_oval(rcx - 2, rcy - 2, rcx + 2, rcy + 2,
+                           fill="#404040", outline="")
+
+        # Temperature text below tyre
+        if temp_c > 0:
+            t = temp_c * 9 / 5 + 32 if self._use_f else temp_c
+            canvas.create_text(cx, H - 3, text=f"{t:.0f}°",
+                               fill=col, font=(*FONT_NUM, 9, "bold"), anchor="s")
+        else:
+            canvas.create_text(cx, H - 3, text="--°",
+                               fill=DIM, font=(*FONT_NUM, 9), anchor="s")
 
     # ------------------------------------------------------------------ toggles
     def _toggle_speed(self, _=None):
@@ -470,13 +522,9 @@ class ACOverlay:
             pos_str = f"P{s['position']}" if s["position"] > 0 else ""
             self.v_lapnum.set(f"Lap {s['lap_num']}  {pos_str}")
 
-            # Tyre temps
-            tyre_keys = ["FL", "FR", "RL", "RR"]
-            for i, pos in enumerate(tyre_keys):
-                tc = s["tyres"][i]
-                td = tc * 9/5 + 32 if self._use_f else tc
-                self._tv[pos].set(f"{td:.0f}°")
-                self._tl[pos].configure(fg=tyre_col(tc))   # colour uses °C always
+            # Tyre icons
+            for i, pos in enumerate(["FL", "FR", "RL", "RR"]):
+                self._draw_tyre(self._tyre_c[pos], pos, s["tyres"][i])
 
             # Fuel
             fp = s["fuel_pct"]
