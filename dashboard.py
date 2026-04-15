@@ -67,8 +67,9 @@ if session.get("best_lap_ms"):
 # Tabs
 # ---------------------------------------------------------------------------
 
-tab_laps, tab_coach, tab_compare, tab_setup = st.tabs([
-    "Lap History", "AI Coach", "Compare Laps", "Setup Advisor"
+tab_laps, tab_coach, tab_compare, tab_setup, tab_corners, tab_lb = st.tabs([
+    "Lap History", "AI Coach", "Compare Laps", "Setup Advisor",
+    "Corner Analysis", "Leaderboard",
 ])
 
 laps = storage.get_laps(session_id)
@@ -268,3 +269,125 @@ with tab_setup:
                 ]
             }
             st.dataframe(pd.DataFrame(stats), use_container_width=True, hide_index=True)
+
+
+# ============================================================
+# TAB 5 — CORNER ANALYSIS
+# ============================================================
+
+with tab_corners:
+    st.header("Corner Analysis")
+    st.markdown(
+        "Breaks your lap into individual corners using lateral G-force data, "
+        "then asks the AI coach to identify exactly where you're losing time."
+    )
+
+    if df.empty:
+        st.info("No laps recorded yet.")
+    else:
+        lap_options_c = {
+            f"Lap {row['lap_number']}  —  {ms_to_laptime(row['lap_time_ms'])}": row["id"]
+            for _, row in df.iterrows()
+        }
+        selected_c_label = st.selectbox("Choose lap", list(lap_options_c.keys()), key="corner_lap")
+        selected_c_id    = lap_options_c[selected_c_label]
+
+        if st.button("Analyze Corners", type="primary"):
+            from coaching.corner_analysis import detect_corners
+            tele    = storage.get_telemetry(selected_c_id)
+            corners = detect_corners(tele)
+
+            if not corners:
+                st.warning(
+                    "No corners detected. This lap's telemetry may not have normalized "
+                    "position data — record a new lap and try again."
+                )
+            else:
+                st.session_state["corners_raw"]      = corners
+                st.session_state["corner_lap_id"]    = selected_c_id
+                with st.spinner("Getting AI corner breakdown..."):
+                    st.session_state["corner_feedback"] = ai_coach.analyze_corners(
+                        selected_c_id, session_id
+                    )
+
+        if st.session_state.get("corners_raw"):
+            col_cf1, col_cf2 = st.columns([2, 3])
+
+            with col_cf1:
+                st.subheader("Corner Data")
+                corner_table = pd.DataFrame([{
+                    "#":           c["corner_number"],
+                    "Pos":         f"{c['track_position']:.1%}",
+                    "Entry km/h":  c["entry_speed_kmh"],
+                    "Min km/h":    c["min_speed_kmh"],
+                    "Exit km/h":   c["exit_speed_kmh"],
+                    "Max G":       c["max_lat_g"],
+                    "Throttle":    f"{c['avg_throttle']:.0%}",
+                    "Trail Brake": "✓" if c["trail_braking"]   else "",
+                    "Early Thr":   "✓" if c["early_throttle"]  else "",
+                } for c in st.session_state["corners_raw"]])
+                st.dataframe(corner_table, use_container_width=True, hide_index=True)
+
+            with col_cf2:
+                st.subheader("AI Corner Feedback")
+                st.markdown(st.session_state.get("corner_feedback", ""))
+
+
+# ============================================================
+# TAB 6 — LEADERBOARD / PERSONAL BESTS
+# ============================================================
+
+with tab_lb:
+    st.header("Personal Bests & Progress")
+    st.markdown("Your best lap times across every track and car combination, and how you've improved over time.")
+
+    pbs = storage.get_personal_bests()
+
+    if not pbs:
+        st.info("No laps recorded yet across any session.")
+    else:
+        # Personal bests table
+        st.subheader("Personal Bests")
+        pb_df = pd.DataFrame([{
+            "Track":       p["track"],
+            "Car":         p["car"],
+            "Best Lap":    ms_to_laptime(p["best_ms"]),
+            "Sessions":    p["sessions"],
+            "Total Laps":  p["total_laps"],
+        } for p in pbs])
+        st.dataframe(pb_df, use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+        st.subheader("Progress Over Time")
+
+        combos          = [f"{p['track']} — {p['car']}" for p in pbs]
+        selected_combo  = st.selectbox("Select track & car", combos, key="lb_combo")
+        selected_pb     = pbs[combos.index(selected_combo)]
+
+        progress = storage.get_progress(selected_pb["track"], selected_pb["car"])
+
+        if progress:
+            prog_df = pd.DataFrame(progress)
+            prog_df["lap_time_s"] = prog_df["lap_time_ms"] / 1000.0
+            prog_df["label"]      = (
+                pd.to_datetime(prog_df["completed_at"], unit="s")
+                .dt.strftime("%m/%d %H:%M")
+            )
+            prog_df = prog_df.sort_values("completed_at")
+
+            st.line_chart(
+                prog_df.set_index("label")["lap_time_s"],
+                use_container_width=True,
+            )
+
+            # Show total improvement
+            first_ms = progress[0]["lap_time_ms"]
+            best_ms  = min(p["lap_time_ms"] for p in progress)
+            gained   = first_ms - best_ms
+            if gained > 0:
+                st.success(
+                    f"Total improvement: **−{ms_to_laptime(gained)}** "
+                    f"from your first lap to your personal best."
+                )
+            elif len(progress) == 1:
+                st.info("Only one lap recorded here — keep driving to see your progress chart.")

@@ -20,7 +20,7 @@ def get_connection() -> sqlite3.Connection:
 
 
 def init_db():
-    """Create tables if they don't already exist."""
+    """Create tables if they don't already exist, and apply any migrations."""
     with get_connection() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS sessions (
@@ -80,9 +80,16 @@ def init_db():
                 g_lon           REAL,
                 car_x           REAL,
                 car_y           REAL,
-                car_z           REAL
+                car_z           REAL,
+                normalized_pos  REAL
             );
         """)
+
+        # Migration: add normalized_pos to existing databases that pre-date this column
+        try:
+            conn.execute("ALTER TABLE telemetry ADD COLUMN normalized_pos REAL DEFAULT 0.0")
+        except sqlite3.OperationalError:
+            pass   # column already exists — that's fine
 
 
 # ---------------------------------------------------------------------------
@@ -104,14 +111,24 @@ def get_session(session_id: int) -> Optional[Dict]:
         return dict(row) if row else None
 
 
+def get_all_sessions() -> List[Dict]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT s.*, COUNT(l.id) as lap_count, MIN(l.lap_time_ms) as best_lap_ms "
+            "FROM sessions s LEFT JOIN laps l ON s.id=l.session_id "
+            "GROUP BY s.id ORDER BY s.started_at DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 # ---------------------------------------------------------------------------
 # Laps
 # ---------------------------------------------------------------------------
 
 def save_lap(session_id: int, lap_data: dict) -> int:
-    cols = ", ".join(lap_data.keys())
+    cols         = ", ".join(lap_data.keys())
     placeholders = ", ".join(["?"] * len(lap_data))
-    values = list(lap_data.values())
+    values       = list(lap_data.values())
     with get_connection() as conn:
         cur = conn.execute(
             f"INSERT INTO laps (session_id, {cols}) VALUES (?, {placeholders})",
@@ -150,12 +167,46 @@ def get_best_lap(session_id: Optional[int] = None) -> Optional[Dict]:
         return dict(row) if row else None
 
 
-def get_all_sessions() -> List[Dict]:
+# ---------------------------------------------------------------------------
+# Leaderboard — personal bests across all sessions
+# ---------------------------------------------------------------------------
+
+def get_personal_bests() -> List[Dict]:
+    """
+    Return the best lap time per track + car combination across every session,
+    together with progress stats.
+    """
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT s.*, COUNT(l.id) as lap_count, MIN(l.lap_time_ms) as best_lap_ms "
-            "FROM sessions s LEFT JOIN laps l ON s.id=l.session_id "
-            "GROUP BY s.id ORDER BY s.started_at DESC"
+            """SELECT s.track,
+                      s.car,
+                      MIN(l.lap_time_ms)        AS best_ms,
+                      COUNT(DISTINCT l.session_id) AS sessions,
+                      COUNT(l.id)               AS total_laps,
+                      MAX(s.started_at)         AS last_driven
+               FROM laps l
+               JOIN sessions s ON l.session_id = s.id
+               WHERE l.is_valid = 1 AND l.lap_time_ms > 0
+               GROUP BY s.track, s.car
+               ORDER BY s.track, s.car"""
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_progress(track: str, car: str) -> List[Dict]:
+    """
+    All valid laps for a specific track + car across every session,
+    ordered chronologically — used to chart improvement over time.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT l.completed_at, l.lap_time_ms, l.lap_number, l.session_id
+               FROM laps l
+               JOIN sessions s ON l.session_id = s.id
+               WHERE s.track=? AND s.car=?
+                 AND l.is_valid=1 AND l.lap_time_ms > 0
+               ORDER BY l.completed_at ASC""",
+            (track, car),
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -176,8 +227,8 @@ def save_telemetry_batch(lap_id: int, samples: list):
                 tyre_wear_fl, tyre_wear_fr, tyre_wear_rl, tyre_wear_rr,
                 brake_temp_fl, brake_temp_fr, brake_temp_rl, brake_temp_rr,
                 suspension_fl, suspension_fr, suspension_rl, suspension_rr,
-                g_lat, g_lon, car_x, car_y, car_z
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                g_lat, g_lon, car_x, car_y, car_z, normalized_pos
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             [(lap_id,) + tuple(s) for s in samples]
         )
 

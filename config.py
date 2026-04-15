@@ -13,3 +13,16 @@ POLL_INTERVAL = 0.1
 AC_SHM_PHYSICS  = "Local\\acpmf_physics"
 AC_SHM_GRAPHICS = "Local\\acpmf_graphics"
 AC_SHM_STATIC   = "Local\\acpmf_static"
+
+# ---------------------------------------------------------------------------
+# Voice coaching (pyttsx3)
+# ---------------------------------------------------------------------------
+# Set to False to disable all spoken feedback.
+VOICE_ENABLED = True
+
+# Words per minute for the TTS engine.
+VOICE_RATE = 170
+
+# Seconds to wait after a lap ends before speaking the AI coaching tip
+# (gives you time to hear the lap time first, and clear the finish line).
+VOICE_COACH_DELAY = 5

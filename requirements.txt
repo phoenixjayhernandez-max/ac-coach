@@ -1,3 +1,4 @@
 anthropic>=0.25.0
 streamlit>=1.35.0
 pandas>=2.0.0
+pyttsx3>=2.90

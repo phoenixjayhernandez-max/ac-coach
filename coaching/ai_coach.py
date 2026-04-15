@@ -68,6 +68,79 @@ def compare_laps(lap_id_a: int, lap_id_b: int, session_id: int) -> str:
 # Setup recommendations
 # ---------------------------------------------------------------------------
 
+def quick_tip(lap_id: int, session_id: int) -> str:
+    """
+    Generate a very short spoken coaching tip (2 sentences, no markdown).
+    Uses the fast Haiku model so it responds quickly enough for post-lap voice feedback.
+    """
+    lap = _get_lap_context(lap_id, session_id)
+    if not lap:
+        return ""
+    if not config.ANTHROPIC_API_KEY or config.ANTHROPIC_API_KEY == "YOUR_API_KEY_HERE":
+        return ""
+
+    prompt = (
+        f"One short coaching tip (2 sentences, spoken aloud — no bullet points or markdown) "
+        f"for this lap at {lap.get('track', '?')} in a {lap.get('car', '?')}.\n"
+        f"Lap time: {ms_to_laptime(lap.get('lap_time_ms', 0))}\n"
+        f"{_format_lap(lap)}\n\n"
+        "Be direct and specific. Focus on the single biggest area for improvement."
+    )
+    client = _build_client()
+    message = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=80,
+        system=(
+            "You are a sim racing coach giving brief spoken post-lap feedback. "
+            "No markdown, no bullet points. Two sentences maximum. Be specific."
+        ),
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return message.content[0].text
+
+
+def analyze_corners(lap_id: int, session_id: int) -> str:
+    """
+    Corner-by-corner breakdown using detected lateral-G segments.
+    Tells the driver exactly which corners cost the most time and why.
+    """
+    from coaching.corner_analysis import detect_corners, format_corners_for_prompt
+
+    lap = _get_lap_context(lap_id, session_id)
+    if not lap:
+        return "No lap data found."
+
+    tele = storage.get_telemetry(lap_id)
+    if not tele:
+        return "No telemetry data for this lap."
+
+    corners = detect_corners(tele)
+    if not corners:
+        return (
+            "No corners detected. This usually means the telemetry for this lap "
+            "was recorded before the normalized position field was added — "
+            "record a new lap and try again."
+        )
+
+    corner_text = format_corners_for_prompt(corners, lap.get("car", "?"), lap.get("track", "?"))
+
+    prompt = (
+        f"Analyze this corner-by-corner data and tell me where I'm losing the most time.\n\n"
+        f"{corner_text}\n\n"
+        f"Overall lap time: {ms_to_laptime(lap.get('lap_time_ms', 0))}\n\n"
+        "For the top 3 corners where I can gain the most time, give a specific actionable fix. "
+        "Reference the actual entry/exit speeds and G-forces from the data."
+    )
+    client = _build_client()
+    message = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=1500,
+        system=_COACH_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return message.content[0].text
+
+
 def get_setup_advice(session_id: int) -> str:
     """
     Looks at your last several laps, identifies patterns in the driving data,
