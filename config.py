@@ -13,8 +13,22 @@ try:
 except Exception:
     pass
 
-# --- PUT YOUR ANTHROPIC API KEY HERE ---
+# ---------------------------------------------------------------------------
+# AI provider — set AI_PROVIDER in .env to switch backends
+# Options: "claude" | "ollama" | "gemini"
+# ---------------------------------------------------------------------------
+AI_PROVIDER = os.getenv("AI_PROVIDER", "ollama")
+
+# Claude (Anthropic) — needs paid credits
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "YOUR_API_KEY_HERE")
+
+# Ollama (free, local) — install from https://ollama.com then run: ollama pull llama3.1
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_MODEL    = os.getenv("OLLAMA_MODEL", "llama3.1")
+
+# Gemini (Google — free tier) — get key at aistudio.google.com
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL   = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 
 # Database file (stored in the same folder as this project)
 DB_PATH = os.path.join(os.path.dirname(__file__), "ac_coach.db")

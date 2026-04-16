@@ -1,18 +1,139 @@
 """
-AI coaching engine powered by Claude.
-Analyzes your lap data and driving telemetry to give personalized feedback
-and setup recommendations — like having a real race engineer in your ear.
+AI coaching engine — supports Claude, Ollama (local/free), and Gemini.
+Switch providers by setting AI_PROVIDER in your .env file.
 """
 
 from typing import Optional
-import anthropic
 import config
 from database import storage
 from telemetry.reader import ms_to_laptime
 
 
-def _build_client() -> anthropic.Anthropic:
-    return anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+# ---------------------------------------------------------------------------
+# Provider dispatcher — all AI calls go through here
+# ---------------------------------------------------------------------------
+
+def _call_ai(system_prompt: str, messages: list, max_tokens: int = 1024) -> str:
+    """
+    Route an AI request to whichever provider is configured.
+    `messages` is a list of {"role": "user"/"assistant", "content": "..."} dicts.
+    Returns the assistant's reply as a plain string.
+    """
+    provider = config.AI_PROVIDER.lower()
+
+    if provider == "claude":
+        return _call_claude(system_prompt, messages, max_tokens)
+    elif provider == "gemini":
+        return _call_gemini(system_prompt, messages, max_tokens)
+    else:
+        return _call_ollama(system_prompt, messages, max_tokens)
+
+
+def _call_claude(system_prompt: str, messages: list, max_tokens: int) -> str:
+    import anthropic
+    try:
+        client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=max_tokens,
+            system=system_prompt,
+            messages=messages,
+        )
+        return response.content[0].text
+    except Exception as e:
+        err = str(e).lower()
+        # Fall back to Gemini if credits exhausted or auth fails
+        if any(k in err for k in ("credit", "billing", "quota", "permission", "401", "403", "529")):
+            if config.GEMINI_API_KEY:
+                print(f"[ai_coach] Claude error ({e}) — falling back to Gemini")
+                return _call_gemini(system_prompt, messages, max_tokens)
+        return f"Claude API error: {e}"
+
+
+def _call_ollama(system_prompt: str, messages: list, max_tokens: int) -> str:
+    import requests
+
+    # Build full message list with system prompt
+    full_messages = [{"role": "system", "content": system_prompt}] + messages
+
+    # Try /api/chat first (Ollama >= 0.1.14)
+    try:
+        r = requests.post(
+            f"{config.OLLAMA_BASE_URL}/api/chat",
+            json={
+                "model": config.OLLAMA_MODEL,
+                "messages": full_messages,
+                "stream": False,
+                "options": {"num_predict": max_tokens},
+            },
+            timeout=120,
+        )
+        if r.status_code == 404:
+            raise ValueError("chat_not_supported")
+        r.raise_for_status()
+        return r.json()["message"]["content"]
+
+    except requests.exceptions.ConnectionError:
+        return (
+            "Ollama is not running. Start it with: ollama serve\n"
+            "Then pull a model: ollama pull llama3.1"
+        )
+    except ValueError:
+        pass  # fall through to /api/generate
+    except Exception as e:
+        return f"Ollama error: {e}"
+
+    # Fallback: /api/generate (older Ollama versions)
+    try:
+        prompt_text = "\n".join(
+            f"{m['role'].upper()}: {m['content']}" for m in full_messages
+        )
+        r = requests.post(
+            f"{config.OLLAMA_BASE_URL}/api/generate",
+            json={
+                "model": config.OLLAMA_MODEL,
+                "prompt": prompt_text,
+                "stream": False,
+                "options": {"num_predict": max_tokens},
+            },
+            timeout=120,
+        )
+        r.raise_for_status()
+        return r.json()["response"]
+    except requests.exceptions.ConnectionError:
+        return (
+            "Ollama is not running. Start it with: ollama serve\n"
+            "Then pull a model: ollama pull llama3.1"
+        )
+    except Exception as e:
+        return f"Ollama error: {e}"
+
+
+def _call_gemini(system_prompt: str, messages: list, max_tokens: int) -> str:
+    try:
+        import google.generativeai as genai
+    except ImportError:
+        return "Gemini not installed. Run: pip install google-generativeai"
+
+    genai.configure(api_key=config.GEMINI_API_KEY)
+    model = genai.GenerativeModel(
+        config.GEMINI_MODEL,
+        system_instruction=system_prompt,
+        generation_config={"max_output_tokens": max_tokens},
+    )
+
+    # Convert message history to Gemini format
+    history = []
+    for m in messages[:-1]:
+        history.append({
+            "role": "user" if m["role"] == "user" else "model",
+            "parts": [m["content"]],
+        })
+
+    chat = model.start_chat(history=history)
+    last_msg = messages[-1]["content"] if messages else ""
+    response = chat.send_message(last_msg)
+    return response.text
 
 
 # ---------------------------------------------------------------------------
@@ -20,33 +141,18 @@ def _build_client() -> anthropic.Anthropic:
 # ---------------------------------------------------------------------------
 
 def analyze_lap(lap_id: int, session_id: int) -> str:
-    """
-    Sends lap data + telemetry summary to Claude and returns coaching feedback.
-    Returns a string you can display directly in the dashboard.
-    """
     lap = _get_lap_context(lap_id, session_id)
     if not lap:
         return "No lap data found."
-
     prompt = _build_lap_prompt(lap)
-    client = _build_client()
-
-    message = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=1024,
-        system=_COACH_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return message.content[0].text
+    return _call_ai(_COACH_SYSTEM_PROMPT, [{"role": "user", "content": prompt}], max_tokens=1024)
 
 
 def compare_laps(lap_id_a: int, lap_id_b: int, session_id: int) -> str:
-    """Compare two laps — useful for spotting where time was gained or lost."""
     lap_a = _get_lap_context(lap_id_a, session_id)
     lap_b = _get_lap_context(lap_id_b, session_id)
     if not lap_a or not lap_b:
         return "Could not load both laps for comparison."
-
     prompt = (
         f"Compare these two laps and tell me specifically where time was gained or lost.\n\n"
         f"**LAP A (Reference / Faster)**\n{_format_lap(lap_a)}\n\n"
@@ -54,29 +160,19 @@ def compare_laps(lap_id_a: int, lap_id_b: int, session_id: int) -> str:
         "Focus on: sector differences, driving style differences, tyre/brake temperatures, "
         "and the single biggest area for improvement in Lap B."
     )
-    client = _build_client()
-    message = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=1024,
-        system=_COACH_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return message.content[0].text
+    return _call_ai(_COACH_SYSTEM_PROMPT, [{"role": "user", "content": prompt}], max_tokens=1024)
 
-
-# ---------------------------------------------------------------------------
-# Setup recommendations
-# ---------------------------------------------------------------------------
 
 def quick_tip(lap_id: int, session_id: int) -> str:
-    """
-    Generate a very short spoken coaching tip (2 sentences, no markdown).
-    Uses the fast Haiku model so it responds quickly enough for post-lap voice feedback.
-    """
+    """Short spoken tip — 2 sentences, no markdown."""
     lap = _get_lap_context(lap_id, session_id)
     if not lap:
         return ""
-    if not config.ANTHROPIC_API_KEY or config.ANTHROPIC_API_KEY == "YOUR_API_KEY_HERE":
+
+    # Skip if Claude is selected but has no key
+    if config.AI_PROVIDER == "claude" and (
+        not config.ANTHROPIC_API_KEY or config.ANTHROPIC_API_KEY == "YOUR_API_KEY_HERE"
+    ):
         return ""
 
     prompt = (
@@ -86,24 +182,14 @@ def quick_tip(lap_id: int, session_id: int) -> str:
         f"{_format_lap(lap)}\n\n"
         "Be direct and specific. Focus on the single biggest area for improvement."
     )
-    client = _build_client()
-    message = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=80,
-        system=(
-            "You are a sim racing coach giving brief spoken post-lap feedback. "
-            "No markdown, no bullet points. Two sentences maximum. Be specific."
-        ),
-        messages=[{"role": "user", "content": prompt}],
+    system = (
+        "You are a sim racing coach giving brief spoken post-lap feedback. "
+        "No markdown, no bullet points. Two sentences maximum. Be specific."
     )
-    return message.content[0].text
+    return _call_ai(system, [{"role": "user", "content": prompt}], max_tokens=80)
 
 
 def analyze_corners(lap_id: int, session_id: int) -> str:
-    """
-    Corner-by-corner breakdown using detected lateral-G segments.
-    Tells the driver exactly which corners cost the most time and why.
-    """
     from coaching.corner_analysis import detect_corners, format_corners_for_prompt
 
     lap = _get_lap_context(lap_id, session_id)
@@ -123,7 +209,6 @@ def analyze_corners(lap_id: int, session_id: int) -> str:
         )
 
     corner_text = format_corners_for_prompt(corners, lap.get("car", "?"), lap.get("track", "?"))
-
     prompt = (
         f"Analyze this corner-by-corner data and tell me where I'm losing the most time.\n\n"
         f"{corner_text}\n\n"
@@ -131,53 +216,29 @@ def analyze_corners(lap_id: int, session_id: int) -> str:
         "For the top 3 corners where I can gain the most time, give a specific actionable fix. "
         "Reference the actual entry/exit speeds and G-forces from the data."
     )
-    client = _build_client()
-    message = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=1500,
-        system=_COACH_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return message.content[0].text
+    return _call_ai(_COACH_SYSTEM_PROMPT, [{"role": "user", "content": prompt}], max_tokens=1500)
 
 
 def get_setup_advice(session_id: int) -> str:
-    """
-    Looks at your last several laps, identifies patterns in the driving data,
-    and suggests setup changes that would help you specifically.
-    """
     laps = storage.get_laps(session_id)
     if not laps:
         return "No laps recorded yet. Complete a few laps first."
 
-    # Summarize the session data
     lap_summaries = []
-    for lap in laps[-10:]:   # last 10 laps
+    for lap in laps[-10:]:
         tele = storage.get_telemetry(lap["id"])
         summary = _summarize_telemetry(tele) if tele else {}
         lap_summaries.append({**lap, **summary})
 
     prompt = _build_setup_prompt(lap_summaries)
-    client = _build_client()
-    message = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=1500,
-        system=_COACH_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return message.content[0].text
+    return _call_ai(_COACH_SYSTEM_PROMPT, [{"role": "user", "content": prompt}], max_tokens=1500)
 
 
 # ---------------------------------------------------------------------------
-# Interactive chat — user can ask follow-up questions
+# Interactive chat
 # ---------------------------------------------------------------------------
 
 def chat(conversation_history: list, user_message: str, session_id: int) -> str:
-    """
-    Maintains a conversation with Claude about your driving.
-    Pass the full conversation_history list each time so Claude remembers context.
-    """
-    # Build context from recent laps to ground the conversation
     laps = storage.get_laps(session_id)
     context_block = ""
     if laps:
@@ -190,18 +251,10 @@ def chat(conversation_history: list, user_message: str, session_id: int) -> str:
             f"{len(laps)} laps total this session.]"
         )
 
-    history = conversation_history + [
+    messages = conversation_history + [
         {"role": "user", "content": user_message + context_block}
     ]
-
-    client = _build_client()
-    message = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=800,
-        system=_COACH_SYSTEM_PROMPT,
-        messages=history,
-    )
-    return message.content[0].text
+    return _call_ai(_COACH_SYSTEM_PROMPT, messages, max_tokens=800)
 
 
 # ---------------------------------------------------------------------------
@@ -219,19 +272,18 @@ def _get_lap_context(lap_id: int, session_id: int) -> Optional[dict]:
 
 
 def _summarize_telemetry(tele: list) -> dict:
-    """Condense thousands of telemetry samples into key averages."""
     if not tele:
         return {}
-    speeds       = [t["speed_kmh"] for t in tele]
-    throttles    = [t["throttle"]  for t in tele]
-    brakes       = [t["brake"]     for t in tele]
-    steer        = [abs(t["steer_angle"]) for t in tele]
-    tyre_fl      = [t["tyre_temp_fl"] for t in tele if t["tyre_temp_fl"]]
-    tyre_fr      = [t["tyre_temp_fr"] for t in tele if t["tyre_temp_fr"]]
-    tyre_rl      = [t["tyre_temp_rl"] for t in tele if t["tyre_temp_rl"]]
-    tyre_rr      = [t["tyre_temp_rr"] for t in tele if t["tyre_temp_rr"]]
-    brake_fl     = [t["brake_temp_fl"] for t in tele if t["brake_temp_fl"]]
-    brake_fr     = [t["brake_temp_fr"] for t in tele if t["brake_temp_fr"]]
+    speeds    = [t["speed_kmh"] for t in tele]
+    throttles = [t["throttle"]  for t in tele]
+    brakes    = [t["brake"]     for t in tele]
+    steer     = [abs(t["steer_angle"]) for t in tele]
+    tyre_fl   = [t["tyre_temp_fl"] for t in tele if t["tyre_temp_fl"]]
+    tyre_fr   = [t["tyre_temp_fr"] for t in tele if t["tyre_temp_fr"]]
+    tyre_rl   = [t["tyre_temp_rl"] for t in tele if t["tyre_temp_rl"]]
+    tyre_rr   = [t["tyre_temp_rr"] for t in tele if t["tyre_temp_rr"]]
+    brake_fl  = [t["brake_temp_fl"] for t in tele if t["brake_temp_fl"]]
+    brake_fr  = [t["brake_temp_fr"] for t in tele if t["brake_temp_fr"]]
 
     def avg(lst): return round(sum(lst) / len(lst), 2) if lst else 0
 
@@ -284,7 +336,7 @@ def _build_lap_prompt(lap: dict) -> str:
 
 def _build_setup_prompt(laps: list) -> str:
     summary_lines = "\n".join(_format_lap(l) for l in laps)
-    car  = laps[0].get("car", "?") if laps else "?"
+    car   = laps[0].get("car", "?") if laps else "?"
     track = laps[0].get("track", "?") if laps else "?"
     return (
         f"Based on my last {len(laps)} laps at **{track}** in a **{car}**, "
@@ -315,4 +367,3 @@ When giving setup advice:
 - Prioritize the most impactful changes first
 - Acknowledge that setup is a trade-off
 """
-

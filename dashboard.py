@@ -11,6 +11,13 @@ import streamlit as st
 import pandas as pd
 import time
 
+try:
+    import plotly.graph_objects as go
+    import plotly.express as px
+    _PLOTLY = True
+except ImportError:
+    _PLOTLY = False
+
 from database import storage
 from coaching import ai_coach
 from telemetry.reader import ms_to_laptime
@@ -227,6 +234,75 @@ with tab_compare:
                 st.markdown("---")
                 st.markdown(comparison)
 
+        # Speed trace chart
+        if _PLOTLY and ref_id and target_id and ref_id != target_id:
+            st.markdown("---")
+            st.subheader("Speed Trace")
+            ref_tele = storage.get_telemetry(ref_id)
+            tgt_tele = storage.get_telemetry(target_id)
+            if ref_tele and tgt_tele:
+                ref_has_pos = any(t.get("normalized_pos", 0) for t in ref_tele)
+                tgt_has_pos = any(t.get("normalized_pos", 0) for t in tgt_tele)
+                if ref_has_pos and tgt_has_pos:
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(
+                        x=[t["normalized_pos"] for t in ref_tele if t.get("normalized_pos")],
+                        y=[t["speed_kmh"]       for t in ref_tele if t.get("normalized_pos")],
+                        mode="lines", name=ref_label,
+                        line=dict(color="#00e676", width=1.5),
+                    ))
+                    fig.add_trace(go.Scatter(
+                        x=[t["normalized_pos"] for t in tgt_tele if t.get("normalized_pos")],
+                        y=[t["speed_kmh"]       for t in tgt_tele if t.get("normalized_pos")],
+                        mode="lines", name=target_label,
+                        line=dict(color="#ff3d57", width=1.5),
+                    ))
+                    fig.update_layout(
+                        plot_bgcolor="#111111",
+                        paper_bgcolor="#111111",
+                        font_color="#f0f0f0",
+                        xaxis=dict(title="Track Position", tickformat=".0%",
+                                   gridcolor="#222222", showgrid=True),
+                        yaxis=dict(title="Speed (km/h)",
+                                   gridcolor="#222222", showgrid=True),
+                        legend=dict(bgcolor="#181818"),
+                        margin=dict(l=40, r=20, t=20, b=40),
+                        height=280,
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    # Throttle trace
+                    st.subheader("Throttle Trace")
+                    fig2 = go.Figure()
+                    fig2.add_trace(go.Scatter(
+                        x=[t["normalized_pos"] for t in ref_tele if t.get("normalized_pos")],
+                        y=[t["throttle"] * 100  for t in ref_tele if t.get("normalized_pos")],
+                        mode="lines", name=ref_label,
+                        line=dict(color="#00e676", width=1.5),
+                    ))
+                    fig2.add_trace(go.Scatter(
+                        x=[t["normalized_pos"] for t in tgt_tele if t.get("normalized_pos")],
+                        y=[t["throttle"] * 100  for t in tgt_tele if t.get("normalized_pos")],
+                        mode="lines", name=target_label,
+                        line=dict(color="#ff3d57", width=1.5),
+                    ))
+                    fig2.update_layout(
+                        plot_bgcolor="#111111", paper_bgcolor="#111111",
+                        font_color="#f0f0f0",
+                        xaxis=dict(title="Track Position", tickformat=".0%",
+                                   gridcolor="#222222"),
+                        yaxis=dict(title="Throttle %", range=[0, 105],
+                                   gridcolor="#222222"),
+                        legend=dict(bgcolor="#181818"),
+                        margin=dict(l=40, r=20, t=20, b=40),
+                        height=200,
+                    )
+                    st.plotly_chart(fig2, use_container_width=True)
+                else:
+                    st.info("Speed trace requires laps recorded after the normalized position update. Record new laps to see the chart.")
+        elif not _PLOTLY:
+            st.info("Install plotly for speed trace charts: `pip install plotly`")
+
 
 # ============================================================
 # TAB 4 — SETUP ADVISOR
@@ -309,6 +385,80 @@ with tab_corners:
                     st.session_state["corner_feedback"] = ai_coach.analyze_corners(
                         selected_c_id, session_id
                     )
+
+        if st.session_state.get("corners_raw") and _PLOTLY:
+            tele_for_map = storage.get_telemetry(st.session_state.get("corner_lap_id", 0))
+            if tele_for_map:
+                map_samples = [t for t in tele_for_map if t.get("car_x") and t.get("car_z")]
+                if map_samples:
+                    st.subheader("Track Map")
+                    fig_map = go.Figure()
+                    # Base track line
+                    fig_map.add_trace(go.Scatter(
+                        x=[t["car_x"] for t in map_samples],
+                        y=[t["car_z"] for t in map_samples],
+                        mode="lines",
+                        line=dict(color="#2a2a2a", width=8),
+                        showlegend=False,
+                        hoverinfo="none",
+                    ))
+                    # Speed-coloured overlay
+                    speeds = [t["speed_kmh"] for t in map_samples]
+                    fig_map.add_trace(go.Scatter(
+                        x=[t["car_x"] for t in map_samples],
+                        y=[t["car_z"] for t in map_samples],
+                        mode="markers",
+                        marker=dict(
+                            color=speeds,
+                            colorscale=[[0,"#ff3d57"],[0.5,"#ffd000"],[1,"#00e676"]],
+                            size=3,
+                            showscale=True,
+                            colorbar=dict(title="km/h", thickness=10,
+                                          tickfont=dict(color="#f0f0f0"),
+                                          titlefont=dict(color="#f0f0f0")),
+                        ),
+                        text=[f"{t['speed_kmh']:.0f} km/h" for t in map_samples],
+                        hoverinfo="text",
+                        showlegend=False,
+                    ))
+                    # Corner markers
+                    corners_raw = st.session_state["corners_raw"]
+                    if corners_raw:
+                        corner_xs, corner_zs, corner_labels = [], [], []
+                        for c in corners_raw:
+                            # Find the sample closest to this corner's track position
+                            target_pos = c["track_position"]
+                            closest = min(
+                                map_samples,
+                                key=lambda t: abs((t.get("normalized_pos") or 0) - target_pos)
+                            )
+                            corner_xs.append(closest["car_x"])
+                            corner_zs.append(closest["car_z"])
+                            corner_labels.append(
+                                f"C{c['corner_number']}  {c['min_speed_kmh']:.0f} km/h min"
+                            )
+                        fig_map.add_trace(go.Scatter(
+                            x=corner_xs, y=corner_zs,
+                            mode="markers+text",
+                            marker=dict(color="#ffd000", size=10, symbol="circle",
+                                        line=dict(color="#111111", width=1)),
+                            text=[f"C{c['corner_number']}" for c in corners_raw],
+                            textposition="top center",
+                            textfont=dict(color="#ffd000", size=10),
+                            hovertext=corner_labels,
+                            hoverinfo="text",
+                            name="Corners",
+                        ))
+                    fig_map.update_layout(
+                        plot_bgcolor="#111111", paper_bgcolor="#111111",
+                        font_color="#f0f0f0",
+                        xaxis=dict(showgrid=False, showticklabels=False, zeroline=False),
+                        yaxis=dict(showgrid=False, showticklabels=False, zeroline=False,
+                                   scaleanchor="x"),
+                        margin=dict(l=0, r=0, t=10, b=0),
+                        height=400,
+                    )
+                    st.plotly_chart(fig_map, use_container_width=True)
 
         if st.session_state.get("corners_raw"):
             col_cf1, col_cf2 = st.columns([2, 3])
