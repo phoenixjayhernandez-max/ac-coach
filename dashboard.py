@@ -93,8 +93,9 @@ with tab_laps:
         st.info("No laps recorded for this session yet.")
     else:
         # Key metrics row
-        best_ms = df[df["is_valid"] == 1]["lap_time_ms"].min() if not df.empty else 0
-        avg_ms  = int(df[df["is_valid"] == 1]["lap_time_ms"].mean()) if not df.empty else 0
+        _valid  = df[df["is_valid"] == 1]["lap_time_ms"].dropna()
+        best_ms = int(_valid.min()) if len(_valid) else 0
+        avg_ms  = int(_valid.mean()) if len(_valid) else 0
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Best Lap",    ms_to_laptime(best_ms))
         col2.metric("Average Lap", ms_to_laptime(avg_ms))
@@ -112,13 +113,22 @@ with tab_laps:
 
         # Lap table
         st.subheader("All Laps")
-        display_df = df[["lap_number", "lap_time_ms", "max_speed_kmh",
-                          "avg_throttle", "avg_brake", "tyre_compound",
-                          "air_temp", "road_temp"]].copy()
+        opt_cols = ["max_speed_kmh", "avg_throttle", "avg_brake",
+                    "tyre_compound", "air_temp", "road_temp"]
+        base_cols = ["lap_number", "lap_time_ms"] + [c for c in opt_cols if c in df.columns]
+        display_df = df[base_cols].copy()
         display_df["lap_time"] = display_df["lap_time_ms"].apply(ms_to_laptime)
-        display_df["avg_throttle"] = (display_df["avg_throttle"] * 100).round(1).astype(str) + "%"
-        display_df["avg_brake"]    = (display_df["avg_brake"]    * 100).round(1).astype(str) + "%"
         display_df = display_df.drop(columns=["lap_time_ms"])
+        if "avg_throttle" in display_df.columns:
+            display_df["avg_throttle"] = (
+                pd.to_numeric(display_df["avg_throttle"], errors="coerce")
+                .fillna(0).mul(100).round(1).astype(str) + "%"
+            )
+        if "avg_brake" in display_df.columns:
+            display_df["avg_brake"] = (
+                pd.to_numeric(display_df["avg_brake"], errors="coerce")
+                .fillna(0).mul(100).round(1).astype(str) + "%"
+            )
         display_df = display_df.rename(columns={
             "lap_number":    "Lap",
             "lap_time":      "Time",
@@ -231,15 +241,26 @@ with tab_compare:
             else:
                 with st.spinner("Comparing laps..."):
                     comparison = ai_coach.compare_laps(ref_id, target_id, session_id)
-                st.markdown("---")
-                st.markdown(comparison)
+                st.session_state["compare_result"]  = comparison
+                st.session_state["compare_ref_id"]  = ref_id
+                st.session_state["compare_tgt_id"]  = target_id
+                st.session_state["compare_ref_lbl"] = ref_label
+                st.session_state["compare_tgt_lbl"] = target_label
 
-        # Speed trace chart
-        if _PLOTLY and ref_id and target_id and ref_id != target_id:
+        if "compare_result" in st.session_state:
+            st.markdown("---")
+            st.markdown(st.session_state["compare_result"])
+
+        # Speed trace chart — only shown after Compare is clicked
+        _cref = st.session_state.get("compare_ref_id")
+        _ctgt = st.session_state.get("compare_tgt_id")
+        if _PLOTLY and _cref and _ctgt and _cref != _ctgt:
             st.markdown("---")
             st.subheader("Speed Trace")
-            ref_tele = storage.get_telemetry(ref_id)
-            tgt_tele = storage.get_telemetry(target_id)
+            _ref_lbl = st.session_state.get("compare_ref_lbl", "Reference")
+            _tgt_lbl = st.session_state.get("compare_tgt_lbl", "Target")
+            ref_tele = storage.get_telemetry(_cref)
+            tgt_tele = storage.get_telemetry(_ctgt)
             if ref_tele and tgt_tele:
                 ref_has_pos = any(t.get("normalized_pos", 0) for t in ref_tele)
                 tgt_has_pos = any(t.get("normalized_pos", 0) for t in tgt_tele)
@@ -248,13 +269,13 @@ with tab_compare:
                     fig.add_trace(go.Scatter(
                         x=[t["normalized_pos"] for t in ref_tele if t.get("normalized_pos")],
                         y=[t["speed_kmh"]       for t in ref_tele if t.get("normalized_pos")],
-                        mode="lines", name=ref_label,
+                        mode="lines", name=_ref_lbl,
                         line=dict(color="#00e676", width=1.5),
                     ))
                     fig.add_trace(go.Scatter(
                         x=[t["normalized_pos"] for t in tgt_tele if t.get("normalized_pos")],
                         y=[t["speed_kmh"]       for t in tgt_tele if t.get("normalized_pos")],
-                        mode="lines", name=target_label,
+                        mode="lines", name=_tgt_lbl,
                         line=dict(color="#ff3d57", width=1.5),
                     ))
                     fig.update_layout(
@@ -277,13 +298,13 @@ with tab_compare:
                     fig2.add_trace(go.Scatter(
                         x=[t["normalized_pos"] for t in ref_tele if t.get("normalized_pos")],
                         y=[t["throttle"] * 100  for t in ref_tele if t.get("normalized_pos")],
-                        mode="lines", name=ref_label,
+                        mode="lines", name=_ref_lbl,
                         line=dict(color="#00e676", width=1.5),
                     ))
                     fig2.add_trace(go.Scatter(
                         x=[t["normalized_pos"] for t in tgt_tele if t.get("normalized_pos")],
                         y=[t["throttle"] * 100  for t in tgt_tele if t.get("normalized_pos")],
-                        mode="lines", name=target_label,
+                        mode="lines", name=_tgt_lbl,
                         line=dict(color="#ff3d57", width=1.5),
                     ))
                     fig2.update_layout(
@@ -330,18 +351,27 @@ with tab_setup:
         st.markdown("---")
         st.subheader("Raw Session Stats")
         if not df.empty:
+            def _safe_series(frame, col):
+                if col not in frame.columns:
+                    return pd.Series(dtype=float)
+                return pd.to_numeric(frame[col], errors="coerce").dropna()
+
+            _lt   = pd.to_numeric(df["lap_time_ms"], errors="coerce").dropna()
+            _spd  = _safe_series(df, "max_speed_kmh")
+            _thr  = _safe_series(df, "avg_throttle")
+            _brk  = _safe_series(df, "avg_brake")
             stats = {
                 "Metric": [
                     "Best Lap", "Worst Lap", "Average Lap",
                     "Avg Max Speed (km/h)", "Avg Throttle %", "Avg Brake %"
                 ],
                 "Value": [
-                    ms_to_laptime(df["lap_time_ms"].min()),
-                    ms_to_laptime(df["lap_time_ms"].max()),
-                    ms_to_laptime(int(df["lap_time_ms"].mean())),
-                    f"{df['max_speed_kmh'].mean():.1f}",
-                    f"{(df['avg_throttle'].mean() * 100):.1f}%",
-                    f"{(df['avg_brake'].mean() * 100):.1f}%",
+                    ms_to_laptime(int(_lt.min())) if len(_lt) else "--",
+                    ms_to_laptime(int(_lt.max())) if len(_lt) else "--",
+                    ms_to_laptime(int(_lt.mean())) if len(_lt) else "--",
+                    f"{_spd.mean():.1f}"         if len(_spd) else "--",
+                    f"{_thr.mean() * 100:.1f}%"  if len(_thr) else "--",
+                    f"{_brk.mean() * 100:.1f}%"  if len(_brk) else "--",
                 ]
             }
             st.dataframe(pd.DataFrame(stats), use_container_width=True, hide_index=True)
@@ -518,12 +548,14 @@ with tab_lb:
 
         if progress:
             prog_df = pd.DataFrame(progress)
+            prog_df = prog_df.dropna(subset=["lap_time_ms"])
             prog_df["lap_time_s"] = prog_df["lap_time_ms"] / 1000.0
-            prog_df["label"]      = (
-                pd.to_datetime(prog_df["completed_at"], unit="s")
-                .dt.strftime("%m/%d %H:%M")
-            )
+            prog_df["completed_at"] = pd.to_numeric(prog_df["completed_at"], errors="coerce")
             prog_df = prog_df.sort_values("completed_at")
+            prog_df["label"] = prog_df["completed_at"].apply(
+                lambda ts: pd.to_datetime(ts, unit="s").strftime("%m/%d %H:%M")
+                if pd.notna(ts) else "?"
+            )
 
             st.line_chart(
                 prog_df.set_index("label")["lap_time_s"],

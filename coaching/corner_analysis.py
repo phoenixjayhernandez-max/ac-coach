@@ -73,10 +73,10 @@ def _summarize_corner(num: int, samples: List[Dict]) -> Dict:
     avg_brake    = sum(brakes)    / len(brakes)
     max_lat_g    = max(lat_gs)
 
-    # Trail braking = still on brake in the first third of the corner
+    # Trail braking = brake still applied while cornering (first third)
     first_third = samples[: max(1, len(samples) // 3)]
     trail_braking = any(
-        s["brake"] > 0.1 and abs(s.get("g_lat", 0)) > lat_gs[0] * 0.6
+        s["brake"] > 0.1 and abs(s.get("g_lat", 0)) > 0.2
         for s in first_third
     )
 
